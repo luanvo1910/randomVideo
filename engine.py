@@ -11,7 +11,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-from itertools import permutations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -80,140 +79,34 @@ def fmt_count(value: int) -> str:
     return f"{mantissa} × 10^{int(exponent)}"
 
 
-def permutation_count(item_count: int, pick: int) -> int:
-    if pick < 0 or item_count < 0 or pick > item_count:
+def maximum_result_count(video_count: int, clips_per_output: int) -> int:
+    """Mỗi video chỉ dùng một lần, nên số kết quả tối đa là số video chia cho số clip mỗi kết quả."""
+    if clips_per_output < 1 or video_count < clips_per_output:
         return 0
-    total = 1
-    for offset in range(pick):
-        total *= item_count - offset
-    return total
-
-
-def nth_permutation(item_count: int, pick: int, index: int) -> tuple[int, ...]:
-    """Thứ tự từ điển của hoán vị chập pick từ item_count phần tử."""
-    pool = list(range(item_count))
-    chosen: list[int] = []
-    for left in range(pick, 0, -1):
-        block = permutation_count(len(pool) - 1, left - 1)
-        if block == 0:
-            raise ValueError("Chỉ số hoán vị không hợp lệ.")
-        position = index // block
-        if position >= len(pool):
-            raise ValueError("Chỉ số hoán vị không hợp lệ.")
-        index %= block
-        chosen.append(pool.pop(position))
-    return tuple(chosen)
-
-
-MAX_USES_PER_VIDEO = 4
-
-
-def maximum_result_count(video_count: int, clips_per_output: int) -> tuple[int, int, int]:
-    """Số kết quả tối đa, cùng với trần do cách ghép và trần do mỗi video dùng ít hơn 5 lần."""
-    permutations_max = permutation_count(video_count, clips_per_output)
-    reuse_max = (video_count * MAX_USES_PER_VIDEO) // clips_per_output
-    return min(permutations_max, reuse_max), permutations_max, reuse_max
-
-
-def _weighted_sample(available: list[int], usage: list[int], pick: int, rng: random.Random) -> list[int]:
-    pool = list(available)
-    chosen: list[int] = []
-    for _ in range(pick):
-        weights = [MAX_USES_PER_VIDEO - usage[item] for item in pool]
-        total = sum(weights)
-        if total <= 0:
-            break
-        point = rng.randrange(total)
-        running = 0
-        for index, item in enumerate(pool):
-            running += weights[index]
-            if point < running:
-                chosen.append(pool.pop(index))
-                break
-    return chosen
-
-
-def _assemble_sequences(item_count: int, pick: int, count: int, rng: random.Random) -> list[tuple[int, ...]]:
-    usage = [0] * item_count
-    seen: set[tuple[int, ...]] = set()
-    sequences: list[tuple[int, ...]] = []
-
-    def add(sequence: tuple[int, ...]) -> bool:
-        if len(sequence) != pick or len(set(sequence)) != pick or sequence in seen:
-            return False
-        if any(usage[item] >= MAX_USES_PER_VIDEO for item in sequence):
-            return False
-        seen.add(sequence)
-        sequences.append(sequence)
-        for item in sequence:
-            usage[item] += 1
-        return True
-
-    def try_group(group: list[int]) -> bool:
-        if len(group) != pick or len(set(group)) != pick:
-            return False
-        if pick <= 4:
-            orders = list(permutations(group))
-            rng.shuffle(orders)
-        else:
-            orders = []
-            for _ in range(16):
-                order = list(group)
-                rng.shuffle(order)
-                orders.append(tuple(order))
-        for sequence in orders:
-            if add(sequence):
-                return True
-        return False
-
-    stalls = 0
-    while len(sequences) < count and stalls < 4000:
-        available = [item for item in range(item_count) if usage[item] < MAX_USES_PER_VIDEO]
-        if len(available) < pick:
-            break
-        if stalls % 4 == 0:
-            ranked = sorted(available, key=lambda item: (usage[item], rng.random()))
-            group = ranked[:pick]
-        else:
-            group = _weighted_sample(available, usage, pick, rng)
-        if try_group(group):
-            stalls = 0
-        else:
-            stalls += 1
-    return sequences
+    return video_count // clips_per_output
 
 
 def sample_sequences(item_count: int, pick: int, count: int, rng: random.Random | None = None) -> list[tuple[int, ...]]:
-    maximum, _, _ = maximum_result_count(item_count, pick)
+    maximum = maximum_result_count(item_count, pick)
     if count < 1 or count > maximum:
         raise ValueError("Số kết quả nằm ngoài số cách ghép có thể tạo.")
     picker = rng or random.SystemRandom()
-    best: list[tuple[int, ...]] = []
-    rounds = 24 if count >= maximum else 6
-    for _ in range(rounds):
-        built = _assemble_sequences(item_count, pick, count, picker)
-        if len(built) > len(best):
-            best = built
-        if len(best) >= count:
-            chosen = best[:count]
-            _validate_sequences(chosen, item_count, pick)
-            return chosen
-    raise ValueError(
-        f"Chỉ xếp được {len(best)} kết quả khi mỗi video nguồn chỉ được dùng trong ít hơn 5 kết quả."
-    )
+    order = list(range(item_count))
+    picker.shuffle(order)
+    sequences = [tuple(order[start : start + pick]) for start in range(0, count * pick, pick)]
+    _validate_sequences(sequences, item_count, pick)
+    return sequences
 
 
 def _validate_sequences(sequences: list[tuple[int, ...]], item_count: int, pick: int) -> None:
     usage = [0] * item_count
-    seen: set[tuple[int, ...]] = set()
     for sequence in sequences:
-        if len(sequence) != pick or len(set(sequence)) != pick or sequence in seen:
+        if len(sequence) != pick or len(set(sequence)) != pick:
             raise ValueError("Mỗi kết quả phải gồm các video khác nhau.")
-        seen.add(sequence)
         for item in sequence:
-            usage[item] += 1
-            if usage[item] >= 5:
-                raise ValueError("Một video nguồn bị dùng từ 5 kết quả trở lên.")
+            if item < 0 or item >= item_count or usage[item]:
+                raise ValueError("Một video nguồn bị dùng hơn 1 lần.")
+            usage[item] = 1
 
 
 def plan_outputs(video_count: int, clips_per_output: int, requested: int) -> OutputPlan:
@@ -261,26 +154,21 @@ def plan_outputs(video_count: int, clips_per_output: int, requested: int) -> Out
             ),
         )
 
-    maximum, permutations_max, reuse_max = maximum_result_count(video_count, clips_per_output)
+    maximum = maximum_result_count(video_count, clips_per_output)
     if requested > maximum:
-        parts = [f"Bạn muốn xuất {fmt_count(requested)} kết quả."]
-        if reuse_max <= permutations_max:
-            parts.append(
-                f"Mỗi video nguồn chỉ được dùng trong ít hơn 5 video kết quả, nên với {fmt_count(video_count)} video "
-                f"và mỗi kết quả ghép {fmt_count(clips_per_output)} video chỉ tạo được tối đa {fmt_count(reuse_max)} kết quả."
-            )
-        if permutations_max < reuse_max:
-            parts.append(
-                f"Từ {fmt_count(video_count)} video chỉ có {fmt_count(permutations_max)} cách ghép không trùng nhau."
-            )
-        parts.append(f"App sẽ chỉ tạo {fmt_count(maximum)} video.")
+        notice = (
+            f"Bạn muốn xuất {fmt_count(requested)} kết quả. "
+            f"Mỗi video nguồn chỉ được dùng đúng 1 lần, nên với {fmt_count(video_count)} video "
+            f"và mỗi kết quả ghép {fmt_count(clips_per_output)} video chỉ tạo được tối đa {fmt_count(maximum)} kết quả. "
+            f"App sẽ chỉ tạo {fmt_count(maximum)} video."
+        )
         return OutputPlan(
             video_count=video_count,
             clips_per_output=clips_per_output,
             requested=requested,
             maximum=maximum,
             actual=maximum,
-            notice=" ".join(parts),
+            notice=notice,
         )
     return OutputPlan(
         video_count=video_count,
@@ -396,13 +284,16 @@ def render_job(
     on_progress: Callable[[int, int, str], None],
     notice: str | None = None,
 ) -> BatchResult:
-    on_log("Đang chọn các cách ghép không trùng nhau...")
+    on_log("Đang trộn ngẫu nhiên các video nguồn...")
     sequences = sample_sequences(len(videos), clips_per_output, count)
     on_log(
-        f"Đã chọn {fmt_count(len(sequences))} cách ghép. "
-        "Trong mỗi kết quả, các video đều khác nhau. "
-        "Mỗi video nguồn chỉ nằm trong ít hơn 5 kết quả."
+        f"Đã chọn {fmt_count(len(sequences))} kết quả. "
+        "Cách ghép và thứ tự video đều ngẫu nhiên. "
+        "Mỗi video nguồn chỉ được dùng đúng 1 lần."
     )
+    leftover = len(videos) - len(sequences) * clips_per_output
+    if leftover:
+        on_log(f"Còn {fmt_count(leftover)} video không đủ để ghép thêm một kết quả nên không dùng.")
     return _render_sequences(
         videos=videos,
         source_root=source_root,
@@ -966,6 +857,7 @@ def _write_manifest(
 ) -> None:
     lines = [
         "Ghép video ngẫu nhiên",
+        "Mỗi video nguồn chỉ dùng đúng 1 lần. Cách ghép và thứ tự đều ngẫu nhiên.",
         f"Khổ xuất: {size_label}",
         f"Số video mỗi kết quả: {clips_per_output}",
         f"Số video đã tạo: {len(created)}",

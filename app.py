@@ -21,6 +21,7 @@ from engine import (
     plan_outputs,
     render_job,
 )
+from updater import APP_VERSION, download_release, fetch_latest, is_newer, launch_replacer, running_as_exe
 
 def _app_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -84,7 +85,7 @@ def install_excepthook(root: tk.Tk) -> None:
 class App:
     def __init__(self) -> None:
         self.root = tk.Tk()
-        self.root.title("Ghép video ngẫu nhiên")
+        self.root.title(f"Ghép video ngẫu nhiên {APP_VERSION}")
         self.root.configure(bg=BG)
         self.root.minsize(760, 600)
         self._center(1040, 900)
@@ -99,6 +100,9 @@ class App:
         self.cancel = threading.Event()
         self.worker: threading.Thread | None = None
         self.job_notice: str | None = None
+        self.pending_update = None
+        self.updating = False
+        self.update_cancel = threading.Event()
         self.tools = None
         self.tools_error: str | None = None
         self._lockable: list[tk.Widget] = []
@@ -127,6 +131,7 @@ class App:
         self._refresh_plan()
         self.root.after(50, self._detect_ffmpeg)
         self.root.after(100, self._poll)
+        self.root.after(600, self._check_for_update)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def run(self) -> None:
@@ -174,7 +179,7 @@ class App:
         ).pack(fill="x")
         subtitle = tk.Label(
             header,
-            text="Đọc một thư mục video, ghép ngẫu nhiên theo số lượng bạn chọn, rồi xuất các video khác nhau ra thư mục khác.",
+            text="Trộn ngẫu nhiên video trong thư mục rồi ghép thành các kết quả. Mỗi video nguồn chỉ dùng đúng một lần, không lặp lại.",
             bg=BG,
             fg=MUTED,
             font=("Segoe UI", 11),
@@ -284,7 +289,7 @@ class App:
         self.plan_label.pack(fill="x", padx=14, pady=(4, 0))
         hint = tk.Label(
             options,
-            text="Mỗi kết quả dùng ít nhất 2 video khác nhau. Mỗi video nguồn chỉ được dùng trong ít hơn 5 video kết quả. Video đã đúng khổ dọc hoặc ngang được giữ nguyên.",
+            text="Mỗi kết quả ghép ít nhất 2 video khác nhau, chọn và xếp ngẫu nhiên, không theo tên file. Mỗi video nguồn chỉ dùng đúng 1 lần trong toàn bộ kết quả. Video đã đúng khổ dọc hoặc ngang được giữ nguyên.",
             bg=CARD,
             fg=MUTED,
             font=("Segoe UI", 10),
@@ -722,14 +727,14 @@ class App:
             else:
                 self.plan_var.set(
                     f"Có thể tạo tối đa {fmt_count(plan.maximum)} kết quả. "
-                    f"Mỗi video nguồn chỉ nằm trong ít hơn 5 kết quả. "
+                    f"Mỗi video nguồn chỉ dùng đúng 1 lần, cách ghép là ngẫu nhiên. "
                     f"Lần này sẽ tạo {fmt_count(plan.actual)} video."
                 )
                 self.plan_label.configure(fg=OK)
         self._refresh_buttons()
 
     def _refresh_buttons(self) -> None:
-        if self.running:
+        if self.running or self.updating:
             return
         can_open = bool(self.output_var.get().strip())
         self.open_button.configure(state="normal" if can_open else "disabled")
@@ -757,7 +762,7 @@ class App:
         self._refresh_buttons()
 
     def _start(self) -> None:
-        if self.running:
+        if self.running or self.updating:
             return
         if self.tools is None:
             self._detect_ffmpeg()
@@ -953,6 +958,23 @@ class App:
             self.status_var.set("Có lỗi")
             self._log(event[1])
             messagebox.showerror("Không ghép được", event[1], parent=self.root)
+        elif kind == "update-available":
+            self.pending_update = event[1]
+            if not self.running and not self.updating:
+                self._begin_update()
+        elif kind == "update-progress":
+            received, total = event[1], event[2]
+            if total > 0:
+                percent = int(received * 100 / total)
+                self.status_var.set(f"Đang tải bản mới · {percent}%")
+            else:
+                self.status_var.set("Đang tải bản mới...")
+        elif kind == "update-failed":
+            self.updating = False
+            self.status_var.set("Không cập nhật được")
+            self._log(event[1])
+        elif kind == "update-ready":
+            self._apply_update(Path(event[1]))
 
     def _finish(self, result: BatchResult) -> None:
         self._set_running(False)
@@ -1000,6 +1022,63 @@ class App:
                 os.startfile(self.output_var.get().strip())
             except OSError:
                 pass
+        if self.pending_update and not self.updating:
+            self.root.after(300, self._begin_update)
+
+    def _check_for_update(self) -> None:
+        def work() -> None:
+            try:
+                release = fetch_latest()
+            except Exception:
+                return
+            if release and is_newer(release.version, APP_VERSION):
+                self.events.put(("update-available", release))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _begin_update(self) -> None:
+        release = self.pending_update
+        if release is None or self.updating or self.running:
+            return
+        self.pending_update = None
+        if not running_as_exe():
+            self._log(f"Có bản {release.version} trên GitHub. Bản này đang chạy từ mã nguồn nên không tự thay file.")
+            return
+        self.updating = True
+        self.update_cancel.clear()
+        self.start_button.configure(state="disabled")
+        destination = _app_dir() / "GhepVideo.new"
+        self.status_var.set(f"Đang tải bản {release.version}...")
+        self._log(f"Có bản {release.version}. Đang tải và sẽ khởi động lại.")
+
+        def work() -> None:
+            try:
+                download_release(
+                    release.download_url,
+                    destination,
+                    lambda received, total: self.events.put(("update-progress", received, total)),
+                    self.update_cancel,
+                )
+            except Exception as exc:
+                self.events.put(("update-failed", f"Không tải được bản mới. {exc}"))
+                return
+            if self.update_cancel.is_set():
+                return
+            self.events.put(("update-ready", str(destination)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_update(self, new_file: Path) -> None:
+        self.status_var.set("Đang khởi động lại bản mới...")
+        try:
+            launch_replacer(new_file, Path(sys.executable).resolve())
+        except Exception as exc:
+            self.updating = False
+            self.status_var.set("Không cập nhật được")
+            self._log(f"Không thay được file đang chạy. {exc}")
+            return
+        self._save_settings()
+        self.root.destroy()
 
     def _log(self, message: str) -> None:
         self.log.configure(state="normal")
@@ -1047,6 +1126,7 @@ class App:
             pass
 
     def _on_close(self) -> None:
+        self.update_cancel.set()
         if self.running:
             stop = messagebox.askokcancel(
                 "Đang ghép",

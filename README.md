@@ -1,10 +1,12 @@
 # Ghép video ngẫu nhiên
 
-Chọn một thư mục video, ghép ngẫu nhiên thành nhiều kết quả khác nhau, rồi xuất ra thư mục khác.
+App Windows đọc một thư mục video, trộn ngẫu nhiên rồi ghép thành nhiều video kết quả.
 
 ## Tải về và dùng
 
-Vào [Releases](https://github.com/luanvo1910/ghep-video-ngau-nhien/releases), tải `GhepVideo.exe`, rồi mở file đó. Không cần cài Python hay FFmpeg.
+Vào [Releases](https://github.com/luanvo1910/randomVideo/releases), tải `GhepVideo.exe`, rồi mở file đó. Không cần cài Python hay FFmpeg.
+
+Từ bản 1.1.0, mỗi lần mở app sẽ kiểm tra GitHub. Nếu có bản mới, app tự tải `GhepVideo.exe` và khởi động lại.
 
 ## Cách dùng
 
@@ -14,9 +16,11 @@ Vào [Releases](https://github.com/luanvo1910/ghep-video-ngau-nhien/releases), t
 4. Chọn khổ dọc hoặc ngang.
 5. Bấm **Bắt đầu ghép**.
 
-Mỗi kết quả gồm các video khác nhau. Mỗi video nguồn chỉ nằm trong ít hơn 5 kết quả. Video đã đúng khổ dọc hoặc ngang được giữ nguyên.
+Mỗi kết quả gồm ít nhất 2 video khác nhau. App trộn toàn bộ video nguồn rồi chia ngẫu nhiên, không theo tên file hay một thứ tự nào khác. Mỗi video nguồn chỉ được dùng đúng 1 lần trong toàn bộ kết quả. Video dư, không đủ để ghép thêm một kết quả, sẽ không được dùng.
 
-Nếu số kết quả nhập vào nhiều hơn số cách ghép có thể tạo, app chỉ làm mức tối đa và báo lại.
+Nếu số kết quả nhập vào nhiều hơn số video chia được, app chỉ làm mức tối đa và báo lại.
+
+Video đã đúng khổ dọc hoặc ngang được giữ nguyên.
 
 File `danh_sach_ghep.txt` trong thư mục xuất ghi từng kết quả được ghép từ video nào.
 
